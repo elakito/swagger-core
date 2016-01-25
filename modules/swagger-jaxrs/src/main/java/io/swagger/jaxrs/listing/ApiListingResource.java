@@ -8,10 +8,12 @@ import io.swagger.config.SwaggerConfig;
 import io.swagger.core.filter.SpecFilter;
 import io.swagger.core.filter.SwaggerSpecFilter;
 import io.swagger.jaxrs.Reader;
+import io.swagger.jaxrs.config.BeanConfig;
 import io.swagger.jaxrs.config.JaxrsScanner;
 import io.swagger.jaxrs.config.ReaderConfigUtils;
 import io.swagger.models.Swagger;
 import io.swagger.util.Yaml;
+
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,27 +32,37 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.UriInfo;
+
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 @Path("/")
 public class ApiListingResource {
-    private static volatile boolean initialized = false;
+    private boolean initialized = false;
     Logger LOGGER = LoggerFactory.getLogger(ApiListingResource.class);
     @Context
     ServletContext context;
-
     protected synchronized Swagger scan(Application app, ServletConfig sc) {
+        return scan(app, null, sc);
+    }
+
+    protected synchronized Swagger scan(Application app, Scanner scanner, ServletConfig sc) {
         Swagger swagger = null;
-        Scanner scanner = ScannerFactory.getScanner();
+        if (scanner == null) {
+            scanner = getDefaultScanner();
+        }
         LOGGER.debug("using scanner " + scanner);
 
         if (scanner != null) {
             SwaggerSerializers.setPrettyPrint(scanner.getPrettyPrint());
-            swagger = (Swagger) context.getAttribute("swagger");
+            Map<String, Swagger> swaggers = (Map<String, Swagger>)context.getAttribute("swaggers");
+            if (swaggers != null && scanner instanceof BeanConfig) {
+                swagger = swaggers.get(((BeanConfig)scanner).getBasePath());
+            } else {
+                swagger = (Swagger) context.getAttribute("swagger");
+            }
 
             Set<Class<?>> classes;
             if (scanner instanceof JaxrsScanner) {
@@ -75,6 +87,9 @@ public class ApiListingResource {
                 }
                 context.setAttribute("swagger", swagger);
             }
+            if (swaggers != null && scanner instanceof BeanConfig) {
+                swaggers.put(((BeanConfig)scanner).getBasePath(), swagger);
+            }
         }
         initialized = true;
         return swagger;
@@ -85,10 +100,25 @@ public class ApiListingResource {
             ServletConfig sc,
             HttpHeaders headers,
             UriInfo uriInfo) {
-        Swagger swagger = (Swagger) context.getAttribute("swagger");
+        Map<String, Scanner> scanners = (Map<String, Scanner>)context.getAttribute("scanners");
+        Scanner scanner = null;
+        Swagger swagger = null;
+        if (scanners != null) {
+            // multiple scanners per context
+            scanner = scanners.get(uriInfo.getBaseUri().getPath());
+            Map<String, Swagger> swaggers = (Map<String, Swagger>)context.getAttribute("swaggers");
+            if (swaggers == null) {
+                context.setAttribute("swaggers", new HashMap<String, Swagger>());
+            }
+            swagger = swaggers.get(uriInfo.getBaseUri().getPath());
+        } else {
+            // single scanner per context (could be null)
+            scanner = (Scanner)context.getAttribute("scanner");
+            swagger = (Swagger)context.getAttribute("swagger");
+        }
         synchronized (ApiListingResource.class) {
             if (!initialized) {
-                swagger = scan(app, sc);
+                swagger = scan(app, scanner, sc);
             }
         }
         if (swagger != null) {
@@ -99,6 +129,7 @@ public class ApiListingResource {
                         getHeaders(headers));
             }
         }
+        
         return swagger;
     }
 
@@ -195,5 +226,9 @@ public class ApiListingResource {
             }
         }
         return output;
+    }
+
+    protected Scanner getDefaultScanner() {
+        return ScannerFactory.getScanner();
     }
 }
